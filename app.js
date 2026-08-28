@@ -125,26 +125,33 @@ async function fetchLiveLeaderboard() {
   throw new Error('Could not reach ESPN for live scores (' + lastError + '). Showing the Google Sheet\'s last saved data instead.');
 }
 
-function computeLeaderboardRows(competitors) {
+function computeLeaderboardRows(competitors, currentRoundNumber) {
   let rows = competitors.map(c => {
     const golfer = (c.athlete && (c.athlete.displayName || c.athlete.shortName)) || '';
     const scoreRaw = c.score !== undefined ? (c.score.displayValue !== undefined ? c.score.displayValue : c.score) : '';
-    const thru = (c.status && c.status.thru) || '';
 
-    // "Today" (current round's score, e.g. "-3") is NOT the same as
-    // status.displayValue, which is usually a state word like "F" -
-    // that's shown separately in the Thru column instead. The actual
-    // round score typically lives in a linescores array, one entry per
-    // round played; the most recent entry is the round in progress.
-    // Checked defensively across a couple of plausible shapes since
-    // this isn't documented anywhere reliable - if ESPN's real shape
-    // differs, this shows blank rather than a wrong/mislabeled number.
+    // Real ESPN shape (confirmed against live tournament data): each
+    // entry in c.linescores is one ROUND, keyed by "period" (1, 2, 3...).
+    // Round entries have their own nested linescores array - THAT
+    // nested array is the hole-by-hole breakdown for that round. A
+    // round that hasn't started yet is just {"period": N} with no
+    // score data at all.
     let today = '';
-    if (Array.isArray(c.linescores) && c.linescores.length > 0) {
-      const currentRoundLine = c.linescores[c.linescores.length - 1];
-      today = (currentRoundLine && (currentRoundLine.displayValue || currentRoundLine.value)) || '';
-    } else if (c.status && c.status.linescores) {
-      today = c.status.linescores;
+    let thru = '';
+    if (Array.isArray(c.linescores) && currentRoundNumber) {
+      const roundEntry = c.linescores.find(ls => ls.period === currentRoundNumber);
+      if (roundEntry) {
+        // Today's round score, e.g. "-6". A round with no holes played
+        // yet shows displayValue "-" - treat that the same as absent.
+        if (roundEntry.displayValue && roundEntry.displayValue !== '-') {
+          today = roundEntry.displayValue;
+        }
+        // Thru = how many holes have a recorded score in this round's
+        // own nested linescores array.
+        if (Array.isArray(roundEntry.linescores)) {
+          thru = String(roundEntry.linescores.length);
+        }
+      }
     }
 
     return { golfer, scoreRaw, today, thru, scoreNum: parseScoreToNumber(scoreRaw) };
@@ -377,9 +384,9 @@ async function refreshAll() {
     let roundNumber = null;
     try {
       const live = await fetchLiveLeaderboard();
-      leaderboardRows = computeLeaderboardRows(live.competitors);
       tournamentName = live.event.name || '';
       roundNumber = extractRoundNumber(live.event, live.competition, live.competitors[0]);
+      leaderboardRows = computeLeaderboardRows(live.competitors, roundNumber);
     } catch (liveErr) {
       showStatus(liveErr.message, true);
       const sheetLb = await fetchSheetTab(CONFIG.LEADERBOARD_GID);
