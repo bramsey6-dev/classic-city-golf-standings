@@ -229,7 +229,7 @@ function extractRoundNumber(event, competition, sampleCompetitor) {
 
 // Rendering
 // -------------------------------------------------------------
-function renderLeaderboard(rows, teamGolferSet, roundNumber) {
+function renderLeaderboard(rows, draftedByGolfer, roundNumber) {
   const container = document.getElementById('leaderboardTable');
   if (!rows || rows.length === 0) {
     container.innerHTML = '<div class="empty-state">No leaderboard data available.</div>';
@@ -246,11 +246,15 @@ function renderLeaderboard(rows, teamGolferSet, roundNumber) {
       <div class="lb-pts">Pts</div>
     </div>
   ` + rows.map(r => {
-    const isMine = teamGolferSet.has(normalizeGolferName(r.golfer));
+    const owners = draftedByGolfer[normalizeGolferName(r.golfer)] || [];
+    const isMine = owners.length > 0;
+    // Usually one team name; joined with "+" in the rare case a golfer
+    // was drafted by more than one person, so nothing is silently hidden.
+    const ownerLabel = owners.join(' + ');
     return `
       <div class="lb-row ${isMine ? 'mine' : ''}">
         <div class="lb-pos">${escapeHtml(r.position)}</div>
-        <div class="lb-name">${escapeHtml(r.golfer)}${isMine ? '<span class="mine-tag">Drafted</span>' : ''}</div>
+        <div class="lb-name">${escapeHtml(r.golfer)}${isMine ? `<span class="mine-tag">${escapeHtml(ownerLabel)}</span>` : ''}</div>
         <div class="lb-score ${scoreClass(r.scoreRaw)}">${escapeHtml(r.scoreRaw)}</div>
         <div class="lb-today ${scoreClass(r.today)}">${escapeHtml(r.today || '—')}</div>
         <div class="lb-thru">${escapeHtml(formatThru(r.thru))}</div>
@@ -431,14 +435,22 @@ async function refreshAll() {
       };
     });
 
-    // Set of all drafted golfer names (for "Drafted" tag in leaderboard
-    // view) - normalized so this matches correctly even when spelling
-    // differs slightly from the live leaderboard data.
-    const allDraftedGolfers = new Set();
-    Object.values(teams).forEach(list => list.forEach(g => allDraftedGolfers.add(normalizeGolferName(g))));
+    // Map of normalized golfer name -> list of person names who drafted
+    // them (a golfer could be picked by more than one person in this
+    // pool's format, so this keeps all of them rather than just one).
+    // Normalized the same way as elsewhere so spelling differences
+    // between the Teams tab and live data don't break the match.
+    const draftedByGolfer = {};
+    Object.entries(teams).forEach(([personName, golferList]) => {
+      golferList.forEach(g => {
+        const key = normalizeGolferName(g);
+        if (!draftedByGolfer[key]) draftedByGolfer[key] = [];
+        draftedByGolfer[key].push(personName);
+      });
+    });
 
     renderStandings(standings);
-    renderLeaderboard(leaderboardRows, allDraftedGolfers, roundNumber);
+    renderLeaderboard(leaderboardRows, draftedByGolfer, roundNumber);
 
     // Surface any picks that genuinely couldn't be matched (real typos,
     // withdrawn/replaced players, etc.) - shown, not hidden, so a wrong
