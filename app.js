@@ -152,6 +152,50 @@ async function fetchLiveLeaderboard() {
   throw new Error('Could not reach ESPN for live scores (' + lastError + '). Showing the Google Sheet\'s last saved data instead.');
 }
 
+const TOTAL_TOURNAMENT_ROUNDS = 4;
+const HOLES_PER_ROUND = 18;
+
+// Shared ranking + points logic: given an array of {scoreNum} objects
+// already representing SOME score (current or projected), returns
+// parallel arrays of position labels and points, applying the same
+// tie-handling rules used everywhere else on this site. Kept as one
+// function so the real leaderboard and the projected leaderboard can
+// never quietly drift apart on how ties are scored.
+function rankByScore(itemsWithScoreNum) {
+  const indices = itemsWithScoreNum.map((_, i) => i);
+  indices.sort((a, b) => {
+    const sa = itemsWithScoreNum[a].scoreNum, sb = itemsWithScoreNum[b].scoreNum;
+    if (sa === null && sb === null) return 0;
+    if (sa === null) return 1;
+    if (sb === null) return -1;
+    return sa - sb;
+  });
+
+  const scoreGroups = [];
+  indices.forEach(idx => {
+    const scoreNum = itemsWithScoreNum[idx].scoreNum;
+    const lastGroup = scoreGroups[scoreGroups.length - 1];
+    if (lastGroup && scoreNum !== null && lastGroup.scoreNum === scoreNum) {
+      lastGroup.origIndices.push(idx);
+    } else {
+      scoreGroups.push({ scoreNum, origIndices: [idx] });
+    }
+  });
+
+  let rankCursor = 1;
+  const pointsByOrigIdx = {};
+  const posByOrigIdx = {};
+  scoreGroups.forEach(group => {
+    const isTie = group.origIndices.length > 1 && group.scoreNum !== null;
+    const points = group.scoreNum === null ? 0 : pointsForRank(rankCursor);
+    const label = group.scoreNum === null ? '--' : (isTie ? 'T' + rankCursor : String(rankCursor));
+    group.origIndices.forEach(origIdx => { pointsByOrigIdx[origIdx] = points; posByOrigIdx[origIdx] = label; });
+    rankCursor += group.origIndices.length;
+  });
+
+  return { pointsByOrigIdx, posByOrigIdx };
+}
+
 function computeLeaderboardRows(competitors, currentRoundNumber) {
   let rows = competitors.map(c => {
     const golfer = (c.athlete && (c.athlete.displayName || c.athlete.shortName)) || '';
@@ -165,6 +209,8 @@ function computeLeaderboardRows(competitors, currentRoundNumber) {
     // score data at all.
     let today = '';
     let thru = '';
+    let todayNum = null;
+    let thruNum = 0;
     if (Array.isArray(c.linescores) && currentRoundNumber) {
       const roundEntry = c.linescores.find(ls => ls.period === currentRoundNumber);
       if (roundEntry) {
@@ -172,57 +218,86 @@ function computeLeaderboardRows(competitors, currentRoundNumber) {
         // yet shows displayValue "-" - treat that the same as absent.
         if (roundEntry.displayValue && roundEntry.displayValue !== '-') {
           today = roundEntry.displayValue;
+          todayNum = parseScoreToNumber(roundEntry.displayValue);
         }
         // Thru = how many holes have a recorded score in this round's
         // own nested linescores array.
         if (Array.isArray(roundEntry.linescores)) {
           thru = String(roundEntry.linescores.length);
+          thruNum = roundEntry.linescores.length;
         }
       }
     }
 
-    return { golfer, scoreRaw, today, thru, scoreNum: parseScoreToNumber(scoreRaw) };
+    return { golfer, scoreRaw, today, thru, todayNum, thruNum, scoreNum: parseScoreToNumber(scoreRaw) };
   }).filter(r => r.golfer);
 
-  rows.sort((a, b) => {
-    if (a.scoreNum === null && b.scoreNum === null) return 0;
-    if (a.scoreNum === null) return 1;
-    if (b.scoreNum === null) return -1;
-    return a.scoreNum - b.scoreNum;
-  });
-
-  const scoreGroups = [];
-  rows.forEach((r, idx) => {
-    const lastGroup = scoreGroups[scoreGroups.length - 1];
-    if (lastGroup && r.scoreNum !== null && lastGroup.scoreNum === r.scoreNum) {
-      lastGroup.indices.push(idx);
-    } else {
-      scoreGroups.push({ scoreNum: r.scoreNum, indices: [idx] });
-    }
-  });
-
-  let rankCursor = 1;
-  const pointsByIdx = {};
-  const posByIdx = {};
-  scoreGroups.forEach(group => {
-    const isTie = group.indices.length > 1 && group.scoreNum !== null;
-    const points = group.scoreNum === null ? 0 : pointsForRank(rankCursor);
-    const label = group.scoreNum === null ? '--' : (isTie ? 'T' + rankCursor : String(rankCursor));
-    group.indices.forEach(idx => { pointsByIdx[idx] = points; posByIdx[idx] = label; });
-    rankCursor += group.indices.length;
-  });
+  const { pointsByOrigIdx, posByOrigIdx } = rankByScore(rows);
 
   return rows.map((r, idx) => ({
-    position: posByIdx[idx],
+    position: posByOrigIdx[idx],
     golfer: r.golfer,
     scoreRaw: r.scoreRaw,
     today: r.today,
     thru: r.thru,
-    points: pointsByIdx[idx]
+    points: pointsByOrigIdx[idx],
+    scoreNum: r.scoreNum,
+    todayNum: r.todayNum,
+    thruNum: r.thruNum
   }));
 }
 
-// -------------------------------------------------------------
+// Projects a golfer's likely final tournament score by extrapolating
+// their CURRENT pace (today's round score-per-hole) across remaining
+// holes - both the rest of today's round and any full rounds not yet
+// played. This is plain linear extrapolation, not a statistical model:
+// it assumes the pace holds steady, which real scoring rarely does
+// exactly, so it's shown as a simple projection, not a guarantee.
+// Returns null if there isn't enough live data yet to project from
+// (e.g. tournament hasn't started, or the round just began with no
+// holes played) - showing nothing is more honest than guessing.
+function projectFinalScore(row, currentRoundNumber) {
+  // Guards against both null (a real "no score" case from live data)
+  // and undefined (the shape the sheet-fallback path produces, which
+  // never sets these fields at all) - either way, without real
+  // scoreNum/todayNum/thruNum to work from, show nothing rather than
+  // computing from missing data.
+  if (row.scoreNum === null || row.scoreNum === undefined || !currentRoundNumber) return null;
+
+  // Total through fully-completed rounds = current total minus
+  // whatever this round has contributed so far.
+  const completedRoundsTotal = row.scoreNum - (row.todayNum || 0);
+
+  const holesRemainingToday = row.thruNum > 0 ? (HOLES_PER_ROUND - row.thruNum) : null;
+  let projectedToday;
+  if (row.thruNum > 0 && row.todayNum !== null) {
+    // Real pace: today's score so far, per hole played, extrapolated
+    // across the holes left today.
+    const paceThisRound = row.todayNum / row.thruNum;
+    projectedToday = row.todayNum + (paceThisRound * holesRemainingToday);
+  } else {
+    // Round hasn't started or no holes recorded yet - nothing to base
+    // a pace on for today specifically, so assume even par for the
+    // rest of today rather than fabricate a trend from zero data.
+    projectedToday = 0;
+  }
+
+  const roundsNotYetStarted = TOTAL_TOURNAMENT_ROUNDS - currentRoundNumber;
+  // For fully future rounds, project using the golfer's own pace
+  // across rounds played so far (their average per-round score),
+  // rather than assuming flat even par - this keeps the projection
+  // tied to their actual demonstrated form in this tournament.
+  const roundsPlayedSoFar = currentRoundNumber - 1 + (row.thruNum > 0 ? 1 : 0);
+  const avgPerRoundSoFar = roundsPlayedSoFar > 0
+    ? (completedRoundsTotal + (row.todayNum || 0)) / roundsPlayedSoFar
+    : 0;
+  const projectedFutureRounds = roundsNotYetStarted * avgPerRoundSoFar;
+
+  const projectedTotal = completedRoundsTotal + projectedToday + projectedFutureRounds;
+  return Math.round(projectedTotal);
+}
+
+
 // Formats the raw "thru" value from ESPN into something readable.
 // Handles the realistic range of values this field can hold: a plain
 // hole number ("14"), a finished round ("18" once all holes are
@@ -256,6 +331,12 @@ function extractRoundNumber(event, competition, sampleCompetitor) {
 
 // Rendering
 // -------------------------------------------------------------
+function formatProjectedScore(n) {
+  if (n === null || n === undefined || isNaN(n)) return '—';
+  if (n === 0) return 'E';
+  return n > 0 ? ('+' + n) : String(n);
+}
+
 function renderLeaderboard(rows, draftedByGolfer, roundNumber, personColorMap) {
   const container = document.getElementById('leaderboardTable');
   if (!rows || rows.length === 0) {
@@ -270,6 +351,7 @@ function renderLeaderboard(rows, draftedByGolfer, roundNumber, personColorMap) {
       <div class="lb-score">Total</div>
       <div class="lb-today">${escapeHtml(roundLabel)}</div>
       <div class="lb-thru">Thru</div>
+      <div class="lb-proj">Proj</div>
       <div class="lb-pts">Pts</div>
     </div>
   ` + rows.map(r => {
@@ -283,6 +365,7 @@ function renderLeaderboard(rows, draftedByGolfer, roundNumber, personColorMap) {
     // single color is a reasonable simplification rather than building
     // out a split/gradient badge for it.
     const tagColor = owners.length > 0 ? (personColorMap[owners[0]] || '#C9A24B') : '';
+    const projected = projectFinalScore(r, roundNumber);
     return `
       <div class="lb-row ${isMine ? 'mine' : ''}">
         <div class="lb-pos">${escapeHtml(r.position)}</div>
@@ -290,6 +373,7 @@ function renderLeaderboard(rows, draftedByGolfer, roundNumber, personColorMap) {
         <div class="lb-score ${scoreClass(r.scoreRaw)}">${escapeHtml(r.scoreRaw)}</div>
         <div class="lb-today ${scoreClass(r.today)}">${escapeHtml(r.today || '—')}</div>
         <div class="lb-thru">${escapeHtml(formatThru(r.thru))}</div>
+        <div class="lb-proj">${escapeHtml(formatProjectedScore(projected))}</div>
         <div class="lb-pts">${r.points}</div>
       </div>
     `;
@@ -330,7 +414,10 @@ function renderStandings(standings) {
           <div class="standing-name">${movementHtml} ${escapeHtml(s.name)}</div>
           <div class="standing-sub">${s.seasonScore || 0} season + ${s.tourChampPoints} Tour Champ.</div>
         </div>
-        <div class="standing-total">${s.total}<span class="unit">pts</span></div>
+        <div class="standing-total">
+          ${s.total}<span class="unit">pts</span>
+          ${s.projectedTotal !== null && s.projectedTotal !== undefined ? `<div class="standing-projected">Proj. ${s.projectedTotal}</div>` : ''}
+        </div>
         <div class="team-golfers">
           <div class="golfer-chip-row">${chips}</div>
         </div>
@@ -446,16 +533,42 @@ async function refreshAll() {
     leaderboardRows.forEach(r => { pointsByGolfer[normalizeGolferName(r.golfer)] = r.points; });
     const unmatchedPicks = [];
 
+    // Projected points per golfer, computed by re-ranking the WHOLE
+    // field on projected final score (not current score) and scoring
+    // from that projected order - keeps "projected score" and "points
+    // used to rank" consistent with each other, rather than mixing a
+    // projected score with a current-moment rank. Only possible when
+    // rows carry the raw scoreNum/todayNum/thruNum fields (i.e. the
+    // live ESPN path) - the rare sheet-fallback path doesn't have
+    // these, so this map ends up empty in that case, and downstream
+    // code treats "no entry" as "no projection available" rather than
+    // guessing.
+    const projectedPointsByGolfer = {};
+    const rowsWithProjection = leaderboardRows
+      .filter(r => r.scoreNum !== null && r.scoreNum !== undefined)
+      .map(r => ({ ...r, scoreNum: projectFinalScore(r, roundNumber) }));
+    if (rowsWithProjection.length > 0) {
+      const { pointsByOrigIdx } = rankByScore(rowsWithProjection);
+      rowsWithProjection.forEach((r, idx) => {
+        projectedPointsByGolfer[normalizeGolferName(r.golfer)] = pointsByOrigIdx[idx];
+      });
+    }
+
     // 4. Compute each team's total
     const standings = Object.keys(teams).map(name => {
       const golferPoints = {};
       let tourChampPoints = 0;
+      let projectedTourChampPoints = 0;
+      let hasProjection = rowsWithProjection.length > 0;
       teams[name].forEach(g => {
         const key = normalizeGolferName(g);
         const pts = pointsByGolfer[key];
         if (pts === undefined) unmatchedPicks.push(g);
         golferPoints[g] = pts !== undefined ? pts : 0;
         tourChampPoints += (pts !== undefined ? pts : 0);
+
+        const projPts = projectedPointsByGolfer[key];
+        projectedTourChampPoints += (projPts !== undefined ? projPts : 0);
       });
       const seasonScore = seasonScoreByName[name] || 0;
       return {
@@ -463,6 +576,7 @@ async function refreshAll() {
         seasonScore,
         tourChampPoints,
         total: seasonScore + tourChampPoints,
+        projectedTotal: hasProjection ? (seasonScore + projectedTourChampPoints) : null,
         golferPoints
       };
     });
