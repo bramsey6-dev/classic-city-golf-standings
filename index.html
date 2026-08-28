@@ -215,6 +215,16 @@
     text-transform: uppercase;
     letter-spacing: 0.06em;
   }
+  .standing-projected {
+    font-family: 'Inter', sans-serif;
+    font-size: 10.5px;
+    font-weight: 500;
+    font-style: italic;
+    color: var(--ink-soft);
+    opacity: 0.85;
+    text-align: right;
+    margin-top: 3px;
+  }
 
   .movement {
     display: inline-flex;
@@ -277,10 +287,10 @@
   }
   .lb-row {
     display: grid;
-    grid-template-columns: 36px 1fr 46px 46px 40px 36px;
+    grid-template-columns: 30px 1fr 42px 42px 32px 44px 32px;
     align-items: center;
-    padding: 10px 8px;
-    gap: 6px;
+    padding: 10px 6px;
+    gap: 4px;
     border-bottom: 1px solid var(--line);
   }
   .lb-row:last-child { border-bottom: none; }
@@ -355,6 +365,20 @@
     text-align: center;
   }
 
+  .lb-proj {
+    font-family: 'Oswald', sans-serif;
+    font-size: 12.5px;
+    font-weight: 500;
+    font-style: italic;
+    color: var(--ink-soft);
+    text-align: center;
+    opacity: 0.85;
+  }
+  .lb-header-row .lb-proj {
+    font-style: normal;
+    opacity: 1;
+  }
+
   .lb-pts {
     font-family: 'Oswald', sans-serif;
     font-size: 13px;
@@ -407,7 +431,7 @@
   }
 
   @media (min-width: 700px) {
-    .lb-row { grid-template-columns: 50px 1fr 60px 60px 50px 44px; padding: 10px 14px; gap: 10px; }
+    .lb-row { grid-template-columns: 50px 1fr 60px 60px 44px 60px 44px; padding: 10px 14px; gap: 10px; }
   }
 </style>
 </head>
