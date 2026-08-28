@@ -17,6 +17,33 @@ function pointsForRank(rank) {
   return POINTS_SCALE[rank - 1];
 }
 
+// Distinct, legible tag colors auto-assigned to each person, in the
+// order their name appears as a Teams tab header. Chosen to stay
+// readable with white text and to sit comfortably alongside the
+// existing green/gold/ivory palette without clashing. Supports more
+// people than currently exist in the pool - if the Teams tab ever
+// grows past this list's length, it cycles back to the start rather
+// than erroring.
+const TEAM_COLOR_PALETTE = [
+  '#C9A24B', // gold (same as the original "Drafted" tag, so the first
+             // team keeps the site's existing accent color)
+  '#2E6F8E', // slate blue
+  '#A6473D', // brick red
+  '#4B7A4E', // moss green
+  '#7A5AA6', // muted purple
+  '#B5722F', // burnt orange
+  '#3D8C86', // teal
+  '#8C5C7A'  // mauve
+];
+
+function buildPersonColorMap(personNamesInOrder) {
+  const map = {};
+  personNamesInOrder.forEach((name, idx) => {
+    map[name] = TEAM_COLOR_PALETTE[idx % TEAM_COLOR_PALETTE.length];
+  });
+  return map;
+}
+
 // In-memory snapshot of last-rendered standings, keyed by person name,
 // used purely to compute up/down movement arrows between refreshes.
 // Intentionally NOT persisted (no localStorage - unsupported in some
@@ -229,7 +256,7 @@ function extractRoundNumber(event, competition, sampleCompetitor) {
 
 // Rendering
 // -------------------------------------------------------------
-function renderLeaderboard(rows, draftedByGolfer, roundNumber) {
+function renderLeaderboard(rows, draftedByGolfer, roundNumber, personColorMap) {
   const container = document.getElementById('leaderboardTable');
   if (!rows || rows.length === 0) {
     container.innerHTML = '<div class="empty-state">No leaderboard data available.</div>';
@@ -251,10 +278,15 @@ function renderLeaderboard(rows, draftedByGolfer, roundNumber) {
     // Usually one team name; joined with "+" in the rare case a golfer
     // was drafted by more than one person, so nothing is silently hidden.
     const ownerLabel = owners.join(' + ');
+    // Color comes from whoever's listed first when there's more than
+    // one owner - a genuinely rare case for an 8-per-team draft, so a
+    // single color is a reasonable simplification rather than building
+    // out a split/gradient badge for it.
+    const tagColor = owners.length > 0 ? (personColorMap[owners[0]] || '#C9A24B') : '';
     return `
       <div class="lb-row ${isMine ? 'mine' : ''}">
         <div class="lb-pos">${escapeHtml(r.position)}</div>
-        <div class="lb-name">${escapeHtml(r.golfer)}${isMine ? `<span class="mine-tag">${escapeHtml(ownerLabel)}</span>` : ''}</div>
+        <div class="lb-name">${escapeHtml(r.golfer)}${isMine ? `<span class="mine-tag" style="background:${tagColor}">${escapeHtml(ownerLabel)}</span>` : ''}</div>
         <div class="lb-score ${scoreClass(r.scoreRaw)}">${escapeHtml(r.scoreRaw)}</div>
         <div class="lb-today ${scoreClass(r.today)}">${escapeHtml(r.today || '—')}</div>
         <div class="lb-thru">${escapeHtml(formatThru(r.thru))}</div>
@@ -449,8 +481,13 @@ async function refreshAll() {
       });
     });
 
+    // Colors assigned in the same left-to-right order people's columns
+    // appear on the Teams tab, so each person's color stays stable
+    // across refreshes as long as the sheet's column order doesn't change.
+    const personColorMap = buildPersonColorMap(Object.keys(teams));
+
     renderStandings(standings);
-    renderLeaderboard(leaderboardRows, draftedByGolfer, roundNumber);
+    renderLeaderboard(leaderboardRows, draftedByGolfer, roundNumber, personColorMap);
 
     // Surface any picks that genuinely couldn't be matched (real typos,
     // withdrawn/replaced players, etc.) - shown, not hidden, so a wrong
