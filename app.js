@@ -115,7 +115,7 @@ async function fetchLiveLeaderboard() {
       const event = data.events && data.events[0];
       const comp = event && event.competitions && event.competitions[0];
       if (comp && comp.competitors && comp.competitors.length > 0) {
-        return { event, competitors: comp.competitors };
+        return { event, competition: comp, competitors: comp.competitors };
       }
       lastError = `No competitors from ${url}`;
     } catch (e) {
@@ -129,8 +129,24 @@ function computeLeaderboardRows(competitors) {
   let rows = competitors.map(c => {
     const golfer = (c.athlete && (c.athlete.displayName || c.athlete.shortName)) || '';
     const scoreRaw = c.score !== undefined ? (c.score.displayValue !== undefined ? c.score.displayValue : c.score) : '';
-    const today = (c.status && c.status.displayValue) || '';
     const thru = (c.status && c.status.thru) || '';
+
+    // "Today" (current round's score, e.g. "-3") is NOT the same as
+    // status.displayValue, which is usually a state word like "F" -
+    // that's shown separately in the Thru column instead. The actual
+    // round score typically lives in a linescores array, one entry per
+    // round played; the most recent entry is the round in progress.
+    // Checked defensively across a couple of plausible shapes since
+    // this isn't documented anywhere reliable - if ESPN's real shape
+    // differs, this shows blank rather than a wrong/mislabeled number.
+    let today = '';
+    if (Array.isArray(c.linescores) && c.linescores.length > 0) {
+      const currentRoundLine = c.linescores[c.linescores.length - 1];
+      today = (currentRoundLine && (currentRoundLine.displayValue || currentRoundLine.value)) || '';
+    } else if (c.status && c.status.linescores) {
+      today = c.status.linescores;
+    }
+
     return { golfer, scoreRaw, today, thru, scoreNum: parseScoreToNumber(scoreRaw) };
   }).filter(r => r.golfer);
 
@@ -178,35 +194,59 @@ function computeLeaderboardRows(competitors) {
 // hole number ("14"), a finished round ("18" once all holes are
 // played, sometimes reported as "F" instead), or blank/unknown before
 // a round starts.
-function formatThru(thru, today) {
+function formatThru(thru) {
   const t = String(thru || '').trim().toUpperCase();
-  if (t === '' || t === '0') {
-    // No thru value yet - round likely hasn't started; show nothing
-    // extra rather than a misleading "Thru 0".
-    return '';
+  if (t === '' || t === '0') return '—';
+  if (t === 'F' || t === '18') return 'F';
+  return t;
+}
+
+// Best-effort extraction of the current round number from whatever
+// ESPN actually provides. Different levels of the response sometimes
+// carry this (event-level status, competition-level status, or a
+// per-competitor status/period field) - this checks the plausible
+// spots in order and falls back to null (shown as blank, never a
+// guessed/wrong number) if none are present.
+function extractRoundNumber(event, competition, sampleCompetitor) {
+  const candidates = [
+    event && event.status && event.status.period,
+    competition && competition.status && competition.status.period,
+    sampleCompetitor && sampleCompetitor.status && sampleCompetitor.status.period
+  ];
+  for (const c of candidates) {
+    const n = parseInt(c, 10);
+    if (!isNaN(n) && n > 0) return n;
   }
-  if (t === 'F' || t === '18') {
-    return 'F';
-  }
-  return 'Thru ' + t;
+  return null;
 }
 
 // Rendering
 // -------------------------------------------------------------
-function renderLeaderboard(rows, teamGolferSet) {
+function renderLeaderboard(rows, teamGolferSet, roundNumber) {
   const container = document.getElementById('leaderboardTable');
   if (!rows || rows.length === 0) {
     container.innerHTML = '<div class="empty-state">No leaderboard data available.</div>';
     return;
   }
-  container.innerHTML = rows.map(r => {
+  const roundLabel = roundNumber ? ('R' + roundNumber) : 'Today';
+  container.innerHTML = `
+    <div class="lb-row lb-header-row">
+      <div class="lb-pos"></div>
+      <div class="lb-name"></div>
+      <div class="lb-score">Total</div>
+      <div class="lb-today">${escapeHtml(roundLabel)}</div>
+      <div class="lb-thru">Thru</div>
+      <div class="lb-pts">Pts</div>
+    </div>
+  ` + rows.map(r => {
     const isMine = teamGolferSet.has(normalizeGolferName(r.golfer));
-    const thruLabel = formatThru(r.thru, r.today);
     return `
       <div class="lb-row ${isMine ? 'mine' : ''}">
         <div class="lb-pos">${escapeHtml(r.position)}</div>
         <div class="lb-name">${escapeHtml(r.golfer)}${isMine ? '<span class="mine-tag">Drafted</span>' : ''}</div>
-        <div class="lb-score ${scoreClass(r.scoreRaw)}">${escapeHtml(r.scoreRaw)}${thruLabel ? `<span class="lb-score-thru">${escapeHtml(thruLabel)}</span>` : ''}</div>
+        <div class="lb-score ${scoreClass(r.scoreRaw)}">${escapeHtml(r.scoreRaw)}</div>
+        <div class="lb-today ${scoreClass(r.today)}">${escapeHtml(r.today || '—')}</div>
+        <div class="lb-thru">${escapeHtml(formatThru(r.thru))}</div>
         <div class="lb-pts">${r.points}</div>
       </div>
     `;
@@ -334,10 +374,12 @@ async function refreshAll() {
     //    Leaderboard tab if ESPN can't be reached.
     let leaderboardRows;
     let tournamentName = '';
+    let roundNumber = null;
     try {
       const live = await fetchLiveLeaderboard();
       leaderboardRows = computeLeaderboardRows(live.competitors);
       tournamentName = live.event.name || '';
+      roundNumber = extractRoundNumber(live.event, live.competition, live.competitors[0]);
     } catch (liveErr) {
       showStatus(liveErr.message, true);
       const sheetLb = await fetchSheetTab(CONFIG.LEADERBOARD_GID);
@@ -389,7 +431,7 @@ async function refreshAll() {
     Object.values(teams).forEach(list => list.forEach(g => allDraftedGolfers.add(normalizeGolferName(g))));
 
     renderStandings(standings);
-    renderLeaderboard(leaderboardRows, allDraftedGolfers);
+    renderLeaderboard(leaderboardRows, allDraftedGolfers, roundNumber);
 
     // Surface any picks that genuinely couldn't be matched (real typos,
     // withdrawn/replaced players, etc.) - shown, not hidden, so a wrong
