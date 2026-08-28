@@ -173,6 +173,24 @@ function computeLeaderboardRows(competitors) {
 }
 
 // -------------------------------------------------------------
+// Formats the raw "thru" value from ESPN into something readable.
+// Handles the realistic range of values this field can hold: a plain
+// hole number ("14"), a finished round ("18" once all holes are
+// played, sometimes reported as "F" instead), or blank/unknown before
+// a round starts.
+function formatThru(thru, today) {
+  const t = String(thru || '').trim().toUpperCase();
+  if (t === '' || t === '0') {
+    // No thru value yet - round likely hasn't started; show nothing
+    // extra rather than a misleading "Thru 0".
+    return '';
+  }
+  if (t === 'F' || t === '18') {
+    return 'F';
+  }
+  return 'Thru ' + t;
+}
+
 // Rendering
 // -------------------------------------------------------------
 function renderLeaderboard(rows, teamGolferSet) {
@@ -183,11 +201,12 @@ function renderLeaderboard(rows, teamGolferSet) {
   }
   container.innerHTML = rows.map(r => {
     const isMine = teamGolferSet.has(normalizeGolferName(r.golfer));
+    const thruLabel = formatThru(r.thru, r.today);
     return `
       <div class="lb-row ${isMine ? 'mine' : ''}">
         <div class="lb-pos">${escapeHtml(r.position)}</div>
         <div class="lb-name">${escapeHtml(r.golfer)}${isMine ? '<span class="mine-tag">Drafted</span>' : ''}</div>
-        <div class="lb-score ${scoreClass(r.scoreRaw)}">${escapeHtml(r.scoreRaw)}</div>
+        <div class="lb-score ${scoreClass(r.scoreRaw)}">${escapeHtml(r.scoreRaw)}${thruLabel ? `<span class="lb-score-thru">${escapeHtml(thruLabel)}</span>` : ''}</div>
         <div class="lb-pts">${r.points}</div>
       </div>
     `;
