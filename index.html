@@ -277,32 +277,46 @@
   }
   .lb-row {
     display: grid;
-    grid-template-columns: 44px 1fr 52px 44px;
+    grid-template-columns: 36px 1fr 46px 46px 40px 36px;
     align-items: center;
-    padding: 10px 12px;
-    gap: 8px;
+    padding: 10px 8px;
+    gap: 6px;
     border-bottom: 1px solid var(--line);
   }
   .lb-row:last-child { border-bottom: none; }
   .lb-row.mine { background: #FBF8EF; }
 
+  .lb-header-row {
+    background: var(--ivory);
+    padding: 6px 8px;
+  }
+  .lb-header-row > div {
+    font-size: 9.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--ink-soft);
+    font-weight: 600;
+    text-align: center;
+  }
+
   .lb-pos {
     font-family: 'Oswald', sans-serif;
-    font-size: 14px;
+    font-size: 13px;
     font-weight: 600;
     color: var(--ink-soft);
     text-align: center;
   }
   .lb-name {
-    font-size: 13.5px;
+    font-size: 12.5px;
     font-weight: 500;
     color: var(--ink);
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 5px;
+    flex-wrap: wrap;
   }
   .lb-name .mine-tag {
-    font-size: 9px;
+    font-size: 8.5px;
     background: var(--gold);
     color: #fff;
     border-radius: 4px;
@@ -318,19 +332,28 @@
     text-align: center;
     line-height: 1.1;
   }
-  .lb-score-thru {
-    display: block;
-    font-family: 'Inter', sans-serif;
-    font-size: 9.5px;
-    font-weight: 500;
-    color: var(--ink-soft);
-    text-align: center;
-    margin-top: 1px;
-    letter-spacing: 0.02em;
-  }
   .lb-score.under { color: var(--under-par); }
   .lb-score.even { color: var(--even-par); }
   .lb-score.over { color: var(--over-par); }
+
+  .lb-today {
+    font-family: 'Oswald', sans-serif;
+    font-size: 13px;
+    font-weight: 600;
+    text-align: center;
+    color: var(--ink-soft);
+  }
+  .lb-today.under { color: var(--under-par); }
+  .lb-today.even { color: var(--even-par); }
+  .lb-today.over { color: var(--over-par); }
+
+  .lb-thru {
+    font-family: 'Inter', sans-serif;
+    font-size: 11.5px;
+    font-weight: 500;
+    color: var(--ink-soft);
+    text-align: center;
+  }
 
   .lb-pts {
     font-family: 'Oswald', sans-serif;
@@ -384,7 +407,7 @@
   }
 
   @media (min-width: 700px) {
-    .lb-row { grid-template-columns: 50px 1fr 60px 50px; }
+    .lb-row { grid-template-columns: 50px 1fr 60px 60px 50px 44px; padding: 10px 14px; gap: 10px; }
   }
 </style>
 </head>
