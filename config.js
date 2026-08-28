@@ -16,8 +16,8 @@ const CONFIG = {
   //   4. Do the same for the "Leaderboard" tab
   // Paste each number below (as a plain number, no quotes).
   STANDINGS_GID: 789865304,      // <-- replace with real gid
-  TEAMS_GID: 1599043310,          // <-- replace with real gid
-  LEADERBOARD_GID: 123444465,    // <-- replace with real gid
+  TEAMS_GID: 123444465,          // <-- replace with real gid
+  LEADERBOARD_GID: 1599043310,    // <-- replace with real gid
 
   // IMPORTANT: your Google Sheet must be shared as "Anyone with the link
   // can view" for this page to read it. In the Sheet, click "Share" (top
