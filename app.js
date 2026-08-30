@@ -204,13 +204,16 @@ function computeLeaderboardRows(competitors, currentRoundNumber) {
     // Real ESPN shape (confirmed against live tournament data): each
     // entry in c.linescores is one ROUND, keyed by "period" (1, 2, 3...).
     // Round entries have their own nested linescores array - THAT
-    // nested array is the hole-by-hole breakdown for that round. A
-    // round that hasn't started yet is just {"period": N} with no
-    // score data at all.
+    // nested array is the hole-by-hole breakdown for that round, each
+    // entry with its own "period" (hole number, 1-18) and a
+    // scoreType.displayValue giving that hole's over/under-par result
+    // ("E", "-1", "+1", etc). A round that hasn't started yet is just
+    // {"period": N} with no score data at all.
     let today = '';
     let thru = '';
     let todayNum = null;
     let thruNum = 0;
+    let holeScores = []; // [{holeNumber, scoreToPar}, ...] for THIS round only
     if (Array.isArray(c.linescores) && currentRoundNumber) {
       const roundEntry = c.linescores.find(ls => ls.period === currentRoundNumber);
       if (roundEntry) {
@@ -225,11 +228,15 @@ function computeLeaderboardRows(competitors, currentRoundNumber) {
         if (Array.isArray(roundEntry.linescores)) {
           thru = String(roundEntry.linescores.length);
           thruNum = roundEntry.linescores.length;
+          holeScores = roundEntry.linescores.map(hole => ({
+            holeNumber: hole.period,
+            scoreToPar: parseScoreToNumber(hole.scoreType && hole.scoreType.displayValue)
+          })).filter(h => h.scoreToPar !== null);
         }
       }
     }
 
-    return { golfer, scoreRaw, today, thru, todayNum, thruNum, scoreNum: parseScoreToNumber(scoreRaw) };
+    return { golfer, scoreRaw, today, thru, todayNum, thruNum, holeScores, scoreNum: parseScoreToNumber(scoreRaw) };
   }).filter(r => r.golfer);
 
   const { pointsByOrigIdx, posByOrigIdx } = rankByScore(rows);
@@ -243,8 +250,33 @@ function computeLeaderboardRows(competitors, currentRoundNumber) {
     points: pointsByOrigIdx[idx],
     scoreNum: r.scoreNum,
     todayNum: r.todayNum,
-    thruNum: r.thruNum
+    thruNum: r.thruNum,
+    holeScores: r.holeScores
   }));
+}
+
+// Builds a field-wide "difficulty" map for today's round: average
+// over/under-par score per hole number, using every golfer's actual
+// completed holes so far. This reflects real conditions (a hard closing
+// stretch shows as a positive/over-par average, an easy par-5 shows
+// negative/under-par) rather than assuming every hole plays the same.
+// Holes nobody's reached yet simply have no entry and are handled by
+// the caller via a fallback.
+function buildHoleDifficultyMap(allRows) {
+  const totals = {}; // holeNumber -> { sum, count }
+  allRows.forEach(r => {
+    if (!Array.isArray(r.holeScores)) return;
+    r.holeScores.forEach(h => {
+      if (!totals[h.holeNumber]) totals[h.holeNumber] = { sum: 0, count: 0 };
+      totals[h.holeNumber].sum += h.scoreToPar;
+      totals[h.holeNumber].count += 1;
+    });
+  });
+  const avgByHole = {};
+  Object.keys(totals).forEach(holeNum => {
+    avgByHole[holeNum] = totals[holeNum].sum / totals[holeNum].count;
+  });
+  return avgByHole;
 }
 
 // Projects a golfer's likely final tournament score by extrapolating
@@ -256,7 +288,7 @@ function computeLeaderboardRows(competitors, currentRoundNumber) {
 // Returns null if there isn't enough live data yet to project from
 // (e.g. tournament hasn't started, or the round just began with no
 // holes played) - showing nothing is more honest than guessing.
-function projectFinalScore(row, currentRoundNumber) {
+function projectFinalScore(row, currentRoundNumber, holeDifficultyMap) {
   // Guards against both null (a real "no score" case from live data)
   // and undefined (the shape the sheet-fallback path produces, which
   // never sets these fields at all) - either way, without real
@@ -268,13 +300,31 @@ function projectFinalScore(row, currentRoundNumber) {
   // whatever this round has contributed so far.
   const completedRoundsTotal = row.scoreNum - (row.todayNum || 0);
 
-  const holesRemainingToday = row.thruNum > 0 ? (HOLES_PER_ROUND - row.thruNum) : null;
   let projectedToday;
   if (row.thruNum > 0 && row.todayNum !== null) {
-    // Real pace: today's score so far, per hole played, extrapolated
-    // across the holes left today.
-    const paceThisRound = row.todayNum / row.thruNum;
-    projectedToday = row.todayNum + (paceThisRound * holesRemainingToday);
+    // Project the REST of today's round hole-by-hole, using the
+    // field's actual average score on each specific remaining hole
+    // (holeDifficultyMap) rather than this golfer's own flat average -
+    // a hard closing stretch now correctly projects worse, an easy
+    // hole projects better, matching real playing conditions today.
+    let remainingHolesTotal = 0;
+    let matchedHoles = 0;
+    for (let holeNum = row.thruNum + 1; holeNum <= HOLES_PER_ROUND; holeNum++) {
+      const holeAvg = holeDifficultyMap && holeDifficultyMap[holeNum];
+      if (holeAvg !== undefined) {
+        remainingHolesTotal += holeAvg;
+        matchedHoles += 1;
+      }
+    }
+    const holesRemainingToday = HOLES_PER_ROUND - row.thruNum;
+    if (matchedHoles < holesRemainingToday) {
+      // Some remaining holes have no field data yet (e.g. nobody's
+      // reached them today) - fall back to this golfer's own pace for
+      // just those unmatched holes, rather than silently omitting them.
+      const paceThisRound = row.todayNum / row.thruNum;
+      remainingHolesTotal += paceThisRound * (holesRemainingToday - matchedHoles);
+    }
+    projectedToday = row.todayNum + remainingHolesTotal;
   } else {
     // Round hasn't started or no holes recorded yet - nothing to base
     // a pace on for today specifically, so assume even par for the
@@ -286,7 +336,9 @@ function projectFinalScore(row, currentRoundNumber) {
   // For fully future rounds, project using the golfer's own pace
   // across rounds played so far (their average per-round score),
   // rather than assuming flat even par - this keeps the projection
-  // tied to their actual demonstrated form in this tournament.
+  // tied to their actual demonstrated form in this tournament. (No
+  // field-difficulty data exists yet for rounds that haven't been
+  // played, so this part stays pace-based rather than guessed.)
   const roundsPlayedSoFar = currentRoundNumber - 1 + (row.thruNum > 0 ? 1 : 0);
   const avgPerRoundSoFar = roundsPlayedSoFar > 0
     ? (completedRoundsTotal + (row.todayNum || 0)) / roundsPlayedSoFar
@@ -337,7 +389,7 @@ function formatProjectedScore(n) {
   return n > 0 ? ('+' + n) : String(n);
 }
 
-function renderLeaderboard(rows, draftedByGolfer, roundNumber, personColorMap) {
+function renderLeaderboard(rows, draftedByGolfer, roundNumber, personColorMap, holeDifficultyMap) {
   const container = document.getElementById('leaderboardTable');
   if (!rows || rows.length === 0) {
     container.innerHTML = '<div class="empty-state">No leaderboard data available.</div>';
@@ -365,7 +417,7 @@ function renderLeaderboard(rows, draftedByGolfer, roundNumber, personColorMap) {
     // single color is a reasonable simplification rather than building
     // out a split/gradient badge for it.
     const tagColor = owners.length > 0 ? (personColorMap[owners[0]] || '#C9A24B') : '';
-    const projected = projectFinalScore(r, roundNumber);
+    const projected = projectFinalScore(r, roundNumber, holeDifficultyMap);
     return `
       <div class="lb-row ${isMine ? 'mine' : ''}">
         <div class="lb-pos">${escapeHtml(r.position)}</div>
@@ -543,10 +595,18 @@ async function refreshAll() {
     // these, so this map ends up empty in that case, and downstream
     // code treats "no entry" as "no projection available" rather than
     // guessing.
+    // Field-wide hole difficulty for today's round, built once from
+    // every golfer's actual completed holes so far, then reused for
+    // every individual golfer's projection below (both the per-golfer
+    // "Proj" column and the projected team standings) - this is what
+    // lets a hard closing stretch correctly project worse for everyone
+    // playing it, rather than treating all remaining holes as equal.
+    const holeDifficultyMap = buildHoleDifficultyMap(leaderboardRows);
+
     const projectedPointsByGolfer = {};
     const rowsWithProjection = leaderboardRows
       .filter(r => r.scoreNum !== null && r.scoreNum !== undefined)
-      .map(r => ({ ...r, scoreNum: projectFinalScore(r, roundNumber) }));
+      .map(r => ({ ...r, scoreNum: projectFinalScore(r, roundNumber, holeDifficultyMap) }));
     if (rowsWithProjection.length > 0) {
       const { pointsByOrigIdx } = rankByScore(rowsWithProjection);
       rowsWithProjection.forEach((r, idx) => {
@@ -601,7 +661,7 @@ async function refreshAll() {
     const personColorMap = buildPersonColorMap(Object.keys(teams));
 
     renderStandings(standings);
-    renderLeaderboard(leaderboardRows, draftedByGolfer, roundNumber, personColorMap);
+    renderLeaderboard(leaderboardRows, draftedByGolfer, roundNumber, personColorMap, holeDifficultyMap);
 
     // Surface any picks that genuinely couldn't be matched (real typos,
     // withdrawn/replaced players, etc.) - shown, not hidden, so a wrong
